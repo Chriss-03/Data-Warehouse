@@ -6,10 +6,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.springframework.web.client.RestClient;
 
@@ -22,10 +20,6 @@ public class IngestController {
     private final TimeSeriesRepository timeSeriesRepository;
     private final TimeSeriesPointsRepository timeSeriesPointsRepository;
     private final DataSourceRepository dataSourceRepository;
-
-    // id generator
-    private final AtomicLong seriesIdGen = new AtomicLong(7001L);
-    private final AtomicLong versionIdGen = new AtomicLong(9001L);
 
     private final RestClient restClient = RestClient.create();
 
@@ -47,9 +41,12 @@ public class IngestController {
      * External ingest from Stooq daily CSV.
      *
      * Example:
+     * POST /ingest/stooq/daily?symbol=AAPL.US&sourceId=10
      * POST /ingest/stooq/daily?symbol=AAPL.US&sourceId=10&instrumentId=1001
      *
-     * If instrumentId is omitted, we derive one from symbol hash (stable but not perfect).
+     * Safe to rerun: instrument and series creation are idempotent.
+     * Each ingest always appends a new version record (temporal audit trail).
+     * Buckets are upserted by (seriesId, bucketStart) — rerun overwrites stale data safely.
      */
     @PostMapping("/stooq/daily")
     public ResponseEntity<?> ingestStooqDaily(
@@ -59,17 +56,14 @@ public class IngestController {
     ) {
         // 0) Ensure source exists (provenance)
         dataSourceRepository.findBySourceId(sourceId).orElseGet(() -> {
-            // auto-create a data source placeholder if missing
             DataSourceDoc s = new DataSourceDoc(null, sourceId, "Stooq");
             return dataSourceRepository.save(s);
         });
 
         long instId = (instrumentId != null) ? instrumentId : deriveInstrumentId(symbol);
 
-        // 1) Fetch CSV from external provider (HTTP)
-        // Stooq daily endpoint: https://stooq.com/q/d/l/?s=AAPL.US&i=d
+        // 1) Fetch CSV from Stooq
         String url = "https://stooq.com/q/d/l/?s=" + symbol + "&i=d";
-
         String csv;
         try {
             csv = restClient.get()
@@ -92,30 +86,32 @@ public class IngestController {
             ));
         }
 
-        // 2) Ensure instrument exists
+        // 2) Idempotent instrument upsert — only insert if not already present
         if (!instrumentRepository.existsByInstrumentId(instId)) {
             instrumentRepository.save(new InstrumentDoc(null, instId, symbol, "UNKNOWN", "ACTIVE", 1L));
         }
 
-        // 3) Append-only metadata version (UPSERT)
-        long versionId = versionIdGen.incrementAndGet();
+        // 3) Append-only version record — always insert a new version (temporal audit trail).
+        //    versionId is derived from current time + instId to avoid collisions across restarts.
+        long versionId = Instant.now().toEpochMilli() * 1000L + (instId % 1000L);
         instrumentVersionRepository.save(new InstrumentVersionDoc(
                 null,
                 versionId,
                 instId,
                 sourceId,
-                Instant.now().toString(),    // validFrom = now
-                Instant.now().toString(),    // ingestedAt = now
+                Instant.now().toString(),
+                Instant.now().toString(),
                 "UPSERT",
                 "{\"provider\":\"stooq\",\"symbol\":\"" + escapeJson(symbol) + "\"}"
         ));
 
-        // 4) Create or get time_series definition (instrumentId + sourceId + granularity)
+        // 4) Idempotent series upsert — reuse existing series if (instrument, source, granularity) already exists
         String granularity = "1d";
         TimeSeriesDoc series = timeSeriesRepository
                 .findFirstByInstrumentIdAndSourceIdAndGranularity(instId, sourceId, granularity)
                 .orElseGet(() -> {
-                    long newSeriesId = seriesIdGen.incrementAndGet();
+                    // seriesId derived from instrument + source hash to be restart-safe
+                    long newSeriesId = Math.abs(Objects.hash(instId, sourceId, granularity)) % 1_000_000_000L + 1L;
                     return timeSeriesRepository.save(new TimeSeriesDoc(
                             null,
                             newSeriesId,
@@ -127,20 +123,19 @@ public class IngestController {
                 });
 
         // 5) Parse CSV rows into points
-        // CSV format: Date,Open,High,Low,Close,Volume
         List<Map<String, Object>> points = parseStooqCsvToPoints(csv);
 
-        // 6) Bucket by month
-        // Create one document per YYYY-MM-01T00:00:00Z bucketStart
+        // 6) Bucket by month (YYYY-MM-01T00:00:00Z)
         Map<String, List<Map<String, Object>>> bucketsByStart = new LinkedHashMap<>();
         for (Map<String, Object> p : points) {
-            String ts = (String) p.get("ts"); // e.g., 2026-03-01T00:00:00Z
-            String bucketStart = ts.substring(0, 7) + "-01T00:00:00Z"; // YYYY-MM-01T00:00:00Z
+            String ts = (String) p.get("ts");
+            String bucketStart = ts.substring(0, 7) + "-01T00:00:00Z";
             bucketsByStart.computeIfAbsent(bucketStart, k -> new ArrayList<>()).add(p);
         }
 
-        // 7) Upsert buckets: (seriesId, bucketStart)
+        // 7) Upsert buckets by (seriesId, bucketStart) — safe to rerun
         int insertedBuckets = 0;
+        int updatedBuckets = 0;
         for (var entry : bucketsByStart.entrySet()) {
             String bucketStart = entry.getKey();
             String pointsJson = toJsonArrayString(entry.getValue());
@@ -153,10 +148,10 @@ public class IngestController {
                     .findFirst();
 
             if (existing.isPresent()) {
-                // overwrite bucket
                 TimeSeriesPointsDoc doc = existing.get();
                 doc.setPoints(pointsJson);
                 timeSeriesPointsRepository.save(doc);
+                updatedBuckets++;
             } else {
                 timeSeriesPointsRepository.save(new TimeSeriesPointsDoc(
                         null,
@@ -175,14 +170,18 @@ public class IngestController {
                 "sourceId", sourceId,
                 "seriesId", series.getSeriesId(),
                 "pointsCount", points.size(),
-                "bucketsInserted", insertedBuckets
+                "bucketsInserted", insertedBuckets,
+                "bucketsUpdated", updatedBuckets
         ));
     }
 
     // ---------- Helpers ----------
 
+    /**
+     * Derives a stable numeric instrumentId from a symbol string.
+     * Consistent across restarts — purely hash-based, no mutable state.
+     */
     private long deriveInstrumentId(String symbol) {
-        // stable numeric id
         return Math.abs(symbol.hashCode()) + 100000L;
     }
 
@@ -190,12 +189,16 @@ public class IngestController {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    private List<Map<String, Object>> parseStooqCsvToPoints(String csv) {
+    /**
+     * Parses a Stooq daily CSV into a list of point maps.
+     * Expected format: Date,Open,High,Low,Close,Volume
+     * Handles missing/malformed values gracefully via safe parsers.
+     */
+    List<Map<String, Object>> parseStooqCsvToPoints(String csv) {
         List<Map<String, Object>> out = new ArrayList<>();
         String[] lines = csv.split("\\r?\\n");
         if (lines.length <= 1) return out;
 
-        // skip header
         for (int i = 1; i < lines.length; i++) {
             String line = lines[i].trim();
             if (line.isEmpty()) continue;
@@ -203,44 +206,40 @@ public class IngestController {
             String[] parts = line.split(",");
             if (parts.length < 6) continue;
 
-            String date = parts[0]; // YYYY-MM-DD
-            String open = parts[1];
-            String high = parts[2];
-            String low = parts[3];
+            String date  = parts[0];
+            String open  = parts[1];
+            String high  = parts[2];
+            String low   = parts[3];
             String close = parts[4];
-            String volume = parts[5];
+            String vol   = parts[5];
 
-            // Convert date to ISO Z at midnight (keeps string-based time format consistent)
             String ts = date + "T00:00:00Z";
 
             Map<String, Object> values = new LinkedHashMap<>();
-            values.put("open", parseDoubleSafe(open));
-            values.put("high", parseDoubleSafe(high));
-            values.put("low", parseDoubleSafe(low));
-            values.put("close", parseDoubleSafe(close));
-            values.put("volume", parseLongSafe(volume));
+            values.put("open",   parseDoubleSafe(open));
+            values.put("high",   parseDoubleSafe(high));
+            values.put("low",    parseDoubleSafe(low));
+            values.put("close",  parseDoubleSafe(close));
+            values.put("volume", parseLongSafe(vol));
 
             Map<String, Object> point = new LinkedHashMap<>();
             point.put("ts", ts);
             point.put("values", values);
-
             out.add(point);
         }
         return out;
     }
 
-    private Double parseDoubleSafe(String s) {
-        try { return Double.valueOf(s); } catch (Exception e) { return null; }
+    Double parseDoubleSafe(String s) {
+        try { return Double.valueOf(s.trim()); } catch (Exception e) { return null; }
     }
 
-    private Long parseLongSafe(String s) {
-        try { return Long.valueOf(s); } catch (Exception e) { return null; }
+    Long parseLongSafe(String s) {
+        try { return Long.valueOf(s.trim()); } catch (Exception e) { return null; }
     }
 
-    // Turn a list of {ts, values} maps into a JSON array string
     private String toJsonArrayString(List<Map<String, Object>> points) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("[");
+        StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < points.size(); i++) {
             sb.append(toJsonObject(points.get(i)));
             if (i < points.size() - 1) sb.append(",");
@@ -251,8 +250,7 @@ public class IngestController {
 
     @SuppressWarnings("unchecked")
     private String toJsonObject(Map<String, Object> obj) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{");
+        StringBuilder sb = new StringBuilder("{");
         int j = 0;
         for (var e : obj.entrySet()) {
             sb.append("\"").append(escapeJson(e.getKey())).append("\":");

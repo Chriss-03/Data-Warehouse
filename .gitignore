@@ -1,0 +1,7 @@
+venv/
+.venv/
+**/venv/
+**/.venv/
+MCP_server/node_modules/
+MCP_server/server_copy.txt
+**/node_modules/

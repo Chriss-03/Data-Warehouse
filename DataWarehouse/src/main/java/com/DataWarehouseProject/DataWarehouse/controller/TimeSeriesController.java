@@ -22,7 +22,7 @@ public class TimeSeriesController {
         this.timeSeriesPointsRepository = timeSeriesPointsRepository;
     }
 
-    // Q5: time-series for asset + source (+ granularity) in range
+    // Q5: time-series for asset + source (+ granularity -> optional) in range
     // Example: /timeseries?instrumentId=1001&sourceId=10&granularity=1d&from=2026-03-01T00:00:00Z&to=2026-03-31T00:00:00Z
     @GetMapping
     public ResponseEntity<?> getTimeSeries(
@@ -41,21 +41,11 @@ public class TimeSeriesController {
 
         TimeSeriesDoc series = seriesOpt.get();
 
-//        List<TimeSeriesPointsDoc> buckets =
-//                timeSeriesPointsRepository.findBySeriesIdAndBucketStartBetweenOrderByBucketStartAsc(
-//                        series.getSeriesId(), from, to
-//                );
-
-        List<TimeSeriesPointsDoc> allBuckets =
-                timeSeriesPointsRepository.findBySeriesIdOrderByBucketStartAsc(series.getSeriesId());
-
-        List<TimeSeriesPointsDoc> buckets = new ArrayList<>();
-        for (TimeSeriesPointsDoc b : allBuckets) {
-            String bs = b.getBucketStart();
-            if (bs != null && bs.compareTo(from) >= 0 && bs.compareTo(to) <= 0) {
-                buckets.add(b);
-            }
-        }
+        // Push range filtering into MongoDB — avoids fetching the entire series into memory
+        List<TimeSeriesPointsDoc> buckets =
+                timeSeriesPointsRepository.findBySeriesIdAndBucketStartBetweenOrderByBucketStartAsc(
+                        series.getSeriesId(), from, to
+                );
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("series", Map.of(
@@ -66,7 +56,6 @@ public class TimeSeriesController {
                 "indicatorSet", series.getIndicatorSet()
         ));
 
-        // return bucketStart + points JSON string
         List<Map<String, Object>> bucketOut = new ArrayList<>();
         for (TimeSeriesPointsDoc b : buckets) {
             bucketOut.add(Map.of(

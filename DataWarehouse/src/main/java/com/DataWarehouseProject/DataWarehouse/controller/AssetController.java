@@ -4,6 +4,8 @@ import com.DataWarehouseProject.DataWarehouse.model.InstrumentDoc;
 import com.DataWarehouseProject.DataWarehouse.model.InstrumentVersionDoc;
 import com.DataWarehouseProject.DataWarehouse.repository.InstrumentRepository;
 import com.DataWarehouseProject.DataWarehouse.repository.InstrumentVersionRepository;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -24,26 +26,41 @@ public class AssetController {
     }
 
     // Q1: list all assets (limited info)
+    // Supports optional pagination:
+    //   GET /assets                    -> all assets, up to 1000 (default)
+    //   GET /assets?page=0&size=10     -> first 10 assets
     @GetMapping
-    public List<Map<String, Object>> listAssets() {
-        List<InstrumentDoc> instruments = instrumentRepository.findAll();
-        List<Map<String, Object>> out = new ArrayList<>();
+    public Map<String, Object> listAssets(
+            @RequestParam(defaultValue = "0")  int page,
+            @RequestParam(defaultValue = "20") int size
+    ) {
+        var pageable = PageRequest.of(page, size, Sort.by("instrumentId").ascending());
+        var pageResult = instrumentRepository.findAll(pageable);
 
-        for (InstrumentDoc i : instruments) {
+        List<Map<String, Object>> content = new ArrayList<>();
+        for (InstrumentDoc i : pageResult.getContent()) {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("instrumentId", i.getInstrumentId());
-            row.put("symbol", i.getSymbol());
-            row.put("classId", i.getClassId());
-            row.put("status", i.getStatus());
-            out.add(row);
+            row.put("symbol",       i.getSymbol());
+            row.put("classId",      i.getClassId());
+            row.put("status",       i.getStatus());
+            content.add(row);
         }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("content",       content);
+        out.put("page",          pageResult.getNumber());
+        out.put("size",          pageResult.getSize());
+        out.put("totalElements", pageResult.getTotalElements());
+        out.put("totalPages",    pageResult.getTotalPages());
         return out;
     }
 
     // Q2: asset details by id
     // Examples:
-    //  - Latest: GET /assets/1001?sourceId=10
-    //  - As-of:  GET /assets/1001?sourceId=10&asOf=2026-02-01T00:00:00Z
+    //   GET /assets/1001
+    //   GET /assets/1001?sourceId=10
+    //   GET /assets/1001?sourceId=10&asOf=2026-02-01T00:00:00Z
     @GetMapping("/{instrumentId}")
     public ResponseEntity<?> getAsset(@PathVariable long instrumentId,
                                       @RequestParam(required = false) Long sourceId,
@@ -57,14 +74,11 @@ public class AssetController {
         InstrumentDoc instrument = instrumentOpt.get();
 
         Optional<InstrumentVersionDoc> versionOpt;
-
         if (asOf != null && !asOf.isBlank()) {
-            // AS-OF temporal query
             versionOpt = (sourceId == null)
                     ? instrumentVersionRepository.findAsOfNoSource(instrumentId, asOf)
                     : instrumentVersionRepository.findAsOf(instrumentId, sourceId, asOf);
         } else {
-            // LATEST query (existing behavior)
             versionOpt = (sourceId == null)
                     ? instrumentVersionRepository.findFirstByInstrumentIdOrderByValidFromDesc(instrumentId)
                     : instrumentVersionRepository.findFirstByInstrumentIdAndSourceIdOrderByValidFromDesc(instrumentId, sourceId);
@@ -72,23 +86,21 @@ public class AssetController {
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("instrumentId", instrument.getInstrumentId());
-        out.put("symbol", instrument.getSymbol());
-        out.put("region", instrument.getRegion());
-        out.put("status", instrument.getStatus());
-        out.put("classId", instrument.getClassId());
+        out.put("symbol",       instrument.getSymbol());
+        out.put("region",       instrument.getRegion());
+        out.put("status",       instrument.getStatus());
+        out.put("classId",      instrument.getClassId());
 
         if (versionOpt.isPresent()) {
             InstrumentVersionDoc v = versionOpt.get();
-
             out.put("latestVersion", Map.of(
-                    "versionId", v.getVersionId(),
-                    "sourceId", v.getSourceId(),
-                    "validFrom", v.getValidFrom(),
+                    "versionId",  v.getVersionId(),
+                    "sourceId",   v.getSourceId(),
+                    "validFrom",  v.getValidFrom(),
                     "ingestedAt", v.getIngestedAt(),
-                    "opType", v.getOpType(),
+                    "opType",     v.getOpType(),
                     "attributes", v.getAttributes()
             ));
-
             out.put("isDeletedAsOf", "DELETE".equalsIgnoreCase(v.getOpType()));
         } else {
             out.put("latestVersion", null);
@@ -108,24 +120,18 @@ public class AssetController {
         long versionId = System.currentTimeMillis();
 
         InstrumentVersionDoc tombstone = new InstrumentVersionDoc(
-                null,
-                versionId,
-                instrumentId,
-                sourceId,
-                validFrom,
-                Instant.now().toString(),
-                "DELETE",
-                "{}"
+                null, versionId, instrumentId, sourceId,
+                validFrom, Instant.now().toString(), "DELETE", "{}"
         );
 
         instrumentVersionRepository.save(tombstone);
 
         return ResponseEntity.ok(Map.of(
-                "message", "Delete marker inserted",
+                "message",      "Delete marker inserted",
                 "instrumentId", instrumentId,
-                "sourceId", sourceId,
-                "validFrom", validFrom,
-                "versionId", versionId
+                "sourceId",     sourceId,
+                "validFrom",    validFrom,
+                "versionId",    versionId
         ));
     }
 }

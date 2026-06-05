@@ -1,0 +1,2 @@
+instrumentId,sourceId,granularity,from,to,seriesId,indicatorSet,pointsCount,minClose,maxClose,avgClose,totalVolume,firstTs,firstClose,lastTs,lastClose,simpleReturn
+1001,10,1d,2025-10-01T00:00:00Z,2027-04-01T00:00:00Z,7001,"[\"open\",\"high\",\"low\",\"close\",\"volume\"]",2,181.5,182.0,181.75,9.2E7,2026-03-01T00:00:00Z,182.0,2026-03-02T00:00:00Z,181.5,-0.0027472527472527475
