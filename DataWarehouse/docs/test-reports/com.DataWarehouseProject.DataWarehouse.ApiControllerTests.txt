@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: com.DataWarehouseProject.DataWarehouse.ApiControllerTests
+-------------------------------------------------------------------------------
+Tests run: 11, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.259 s -- in com.DataWarehouseProject.DataWarehouse.ApiControllerTests
