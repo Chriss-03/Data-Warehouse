@@ -39,10 +39,8 @@ public class IngestController {
 
     /**
      * External ingest from Stooq daily CSV.
-     *
-     * Example:
-     * POST /ingest/stooq/daily?symbol=AAPL.US&sourceId=10
-     * POST /ingest/stooq/daily?symbol=AAPL.US&sourceId=10&instrumentId=1001
+     * POST /ingest/stooq/daily?symbol=AAPL.US&sourceId=20
+     * POST /ingest/stooq/daily?symbol=AAPL.US&sourceId=20&instrumentId=1001
      *
      * Safe to rerun: instrument and series creation are idempotent.
      * Each ingest always appends a new version record (temporal audit trail).
@@ -86,13 +84,12 @@ public class IngestController {
             ));
         }
 
-        // 2) Idempotent instrument upsert — only insert if not already present
+        // 2) Idempotent instrument upsert
         if (!instrumentRepository.existsByInstrumentId(instId)) {
             instrumentRepository.save(new InstrumentDoc(null, instId, symbol, "UNKNOWN", "ACTIVE", 1L));
         }
 
-        // 3) Append-only version record — always insert a new version (temporal audit trail).
-        //    versionId is derived from current time + instId to avoid collisions across restarts.
+        // 3) Append-only version record — always insert (temporal audit trail)
         long versionId = Instant.now().toEpochMilli() * 1000L + (instId % 1000L);
         instrumentVersionRepository.save(new InstrumentVersionDoc(
                 null,
@@ -105,12 +102,11 @@ public class IngestController {
                 "{\"provider\":\"stooq\",\"symbol\":\"" + escapeJson(symbol) + "\"}"
         ));
 
-        // 4) Idempotent series upsert — reuse existing series if (instrument, source, granularity) already exists
+        // 4) Idempotent series upsert
         String granularity = "1d";
         TimeSeriesDoc series = timeSeriesRepository
                 .findFirstByInstrumentIdAndSourceIdAndGranularity(instId, sourceId, granularity)
                 .orElseGet(() -> {
-                    // seriesId derived from instrument + source hash to be restart-safe
                     long newSeriesId = Math.abs(Objects.hash(instId, sourceId, granularity)) % 1_000_000_000L + 1L;
                     return timeSeriesRepository.save(new TimeSeriesDoc(
                             null,
@@ -125,7 +121,7 @@ public class IngestController {
         // 5) Parse CSV rows into points
         List<Map<String, Object>> points = parseStooqCsvToPoints(csv);
 
-        // 6) Bucket by month (YYYY-MM-01T00:00:00Z)
+        // 6) Bucket by month
         Map<String, List<Map<String, Object>>> bucketsByStart = new LinkedHashMap<>();
         for (Map<String, Object> p : points) {
             String ts = (String) p.get("ts");
@@ -154,47 +150,31 @@ public class IngestController {
                 updatedBuckets++;
             } else {
                 timeSeriesPointsRepository.save(new TimeSeriesPointsDoc(
-                        null,
-                        series.getSeriesId(),
-                        bucketStart,
-                        pointsJson
+                        null, series.getSeriesId(), bucketStart, pointsJson
                 ));
                 insertedBuckets++;
             }
         }
 
         return ResponseEntity.ok(Map.of(
-                "message", "Ingested from external provider (stooq)",
-                "symbol", symbol,
-                "instrumentId", instId,
-                "sourceId", sourceId,
-                "seriesId", series.getSeriesId(),
-                "pointsCount", points.size(),
+                "message",        "Ingested from external provider (stooq)",
+                "symbol",         symbol,
+                "instrumentId",   instId,
+                "sourceId",       sourceId,
+                "seriesId",       series.getSeriesId(),
+                "pointsCount",    points.size(),
                 "bucketsInserted", insertedBuckets,
-                "bucketsUpdated", updatedBuckets
+                "bucketsUpdated",  updatedBuckets
         ));
     }
 
-    // ---------- Helpers ----------
+    // ---------- Helpers — public so CsvParser utility and tests can use them ----------
 
-    /**
-     * Derives a stable numeric instrumentId from a symbol string.
-     * Consistent across restarts — purely hash-based, no mutable state.
-     */
-    private long deriveInstrumentId(String symbol) {
+    public long deriveInstrumentId(String symbol) {
         return Math.abs(symbol.hashCode()) + 100000L;
     }
 
-    private String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    /**
-     * Parses a Stooq daily CSV into a list of point maps.
-     * Expected format: Date,Open,High,Low,Close,Volume
-     * Handles missing/malformed values gracefully via safe parsers.
-     */
-    List<Map<String, Object>> parseStooqCsvToPoints(String csv) {
+    public List<Map<String, Object>> parseStooqCsvToPoints(String csv) {
         List<Map<String, Object>> out = new ArrayList<>();
         String[] lines = csv.split("\\r?\\n");
         if (lines.length <= 1) return out;
@@ -202,25 +182,17 @@ public class IngestController {
         for (int i = 1; i < lines.length; i++) {
             String line = lines[i].trim();
             if (line.isEmpty()) continue;
-
             String[] parts = line.split(",");
             if (parts.length < 6) continue;
 
-            String date  = parts[0];
-            String open  = parts[1];
-            String high  = parts[2];
-            String low   = parts[3];
-            String close = parts[4];
-            String vol   = parts[5];
-
-            String ts = date + "T00:00:00Z";
+            String ts = parts[0] + "T00:00:00Z";
 
             Map<String, Object> values = new LinkedHashMap<>();
-            values.put("open",   parseDoubleSafe(open));
-            values.put("high",   parseDoubleSafe(high));
-            values.put("low",    parseDoubleSafe(low));
-            values.put("close",  parseDoubleSafe(close));
-            values.put("volume", parseLongSafe(vol));
+            values.put("open",   parseDoubleSafe(parts[1]));
+            values.put("high",   parseDoubleSafe(parts[2]));
+            values.put("low",    parseDoubleSafe(parts[3]));
+            values.put("close",  parseDoubleSafe(parts[4]));
+            values.put("volume", parseLongSafe(parts[5]));
 
             Map<String, Object> point = new LinkedHashMap<>();
             point.put("ts", ts);
@@ -230,12 +202,16 @@ public class IngestController {
         return out;
     }
 
-    Double parseDoubleSafe(String s) {
+    public Double parseDoubleSafe(String s) {
         try { return Double.valueOf(s.trim()); } catch (Exception e) { return null; }
     }
 
-    Long parseLongSafe(String s) {
+    public Long parseLongSafe(String s) {
         try { return Long.valueOf(s.trim()); } catch (Exception e) { return null; }
+    }
+
+    private String escapeJson(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private String toJsonArrayString(List<Map<String, Object>> points) {

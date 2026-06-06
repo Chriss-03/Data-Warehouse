@@ -1,0 +1,26 @@
+$ spark-submit --master "local[*]" spark-ML/spark_ml_nextday_close.py
+26/06/06 21:52:31 INFO SparkContext: Running Spark version 3.5.1
+26/06/06 21:52:31 INFO SparkContext: Submitted application: DWH NextDay Close Predictor
+26/06/06 21:52:32 INFO Executor: Starting executor ID driver on host localhost
+
+=== SPARK ML — NEXT-DAY CLOSE PRICE PREDICTION ===
+Dataset : AAPL.US (instrumentId=504815344, sourceId=20)
+Features: [open, high, low, close, volume]
+Label   : next_day_close
+Train   : 2493 rows (80%)
+Test    :  624 rows (20%)
+
+Training LinearRegression model...
+
+=== MODEL EVALUATION ===
+RMSE : 4.872
+R²   : 0.9971
+MAE  : 3.541
+
+=== NEXT-DAY PREDICTION (latest data point) ===
+Last close  : 371.04 (2026-03-25)
+Predicted   : 369.87 (2026-03-26)
+
+26/06/06 21:52:38 INFO SparkContext: Successfully stopped SparkContext
+Predictions written to spark-ML/output/predictions/
+Evaluation metrics written to spark-ML/output/evaluation.txt

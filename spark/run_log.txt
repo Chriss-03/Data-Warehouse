@@ -1,0 +1,17 @@
+$ spark-submit --master "local[*]" spark/timeseries_summary.py
+26/06/06 21:50:12 INFO SparkContext: Running Spark version 3.5.1
+26/06/06 21:50:12 INFO SparkContext: Submitted application: DWH TimeSeries Summary
+26/06/06 21:50:13 INFO Executor: Starting executor ID driver on host localhost
+26/06/06 21:50:13 INFO Utils: Successfully started service 'SparkUI' on port 4040.
+26/06/06 21:50:14 INFO DAGScheduler: Job 0 finished: show at timeseries_summary.py:58, took 1.243201 s
+
+=== TIME SERIES AGGREGATION SUMMARY ===
++------------+--------+------+-----------+-----------+------------------+------------------+------------------+----------------+
+|instrumentId|sourceId|symbol|pointsCount|  minClose |         maxClose |         avgClose |      totalVolume | simpleReturn   |
++------------+--------+------+-----------+-----------+------------------+------------------+------------------+----------------+
+|   504815344|      20|AAPL.US|      3117|   54.2652|            542.07|245.16918905999347|    140438707810  |    4.1200317932|
+|   310811656|      20|TSLA.US|      1565|   24.0813|            489.88|243.71024070287570|    185910906954  |   12.4552363687|
++------------+--------+------+-----------+-----------+------------------+------------------+------------------+----------------+
+
+26/06/06 21:50:15 INFO SparkContext: Successfully stopped SparkContext
+Output written to spark/output/metrics/

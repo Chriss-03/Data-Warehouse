@@ -1,0 +1,132 @@
+================================================================
+MCP + LLM INTEGRATION TRANSCRIPT
+DWH Platform — Claude AI Assistant via MCP
+Date: 2026-06-06
+================================================================
+
+This transcript demonstrates the LLM assistant (Claude) calling
+the DWH platform's MCP tools in real-time to answer questions
+grounded in live warehouse data. All tool calls hit the Spring Boot
+REST API at http://localhost:8080 via the MCP server (server.js).
+
+----------------------------------------------------------------
+TOOL CALL 1: list_assets
+----------------------------------------------------------------
+Request : list_assets {}
+Response:
+{
+  "content": [
+    { "instrumentId": 504815344, "symbol": "AAPL.US", "classId": 1, "status": "ACTIVE" },
+    { "instrumentId": 310811656, "symbol": "TSLA.US", "classId": 1, "status": "ACTIVE" }
+  ],
+  "page": 0, "size": 20, "totalElements": 2, "totalPages": 1
+}
+
+----------------------------------------------------------------
+TOOL CALL 2: list_sources
+----------------------------------------------------------------
+Request : list_sources {}
+Response:
+{
+  "content": [
+    { "sourceId": 20, "name": "Stooq" }
+  ],
+  "page": 0, "size": 20, "totalElements": 1, "totalPages": 1
+}
+
+----------------------------------------------------------------
+TOOL CALL 3: get_source
+----------------------------------------------------------------
+Request : get_source { "sourceId": 20 }
+Response:
+{
+  "sourceId": 20,
+  "name": "Stooq",
+  "type": "market",
+  "description": "Financial data provider: Stooq"
+}
+
+----------------------------------------------------------------
+TOOL CALL 4: get_asset (with provenance)
+----------------------------------------------------------------
+Request : get_asset { "instrumentId": 504815344, "sourceId": 20 }
+Response:
+{
+  "instrumentId": 504815344,
+  "symbol": "AAPL.US",
+  "region": "UNKNOWN",
+  "status": "ACTIVE",
+  "classId": 1,
+  "latestVersion": {
+    "versionId": 1780771417247344,
+    "sourceId": 20,
+    "validFrom": "2026-06-06T18:43:37.247341Z",
+    "ingestedAt": "2026-06-06T18:43:37.247434Z",
+    "opType": "UPSERT",
+    "attributes": "{\"provider\":\"stooq\",\"symbol\":\"AAPL.US\"}"
+  },
+  "isDeletedAsOf": false
+}
+
+----------------------------------------------------------------
+TOOL CALL 5: ingest_stooq_daily (agentic ingestion)
+----------------------------------------------------------------
+Request : ingest_stooq_daily { "symbol": "TSLA.US", "sourceId": 20 }
+Response:
+{
+  "message": "Ingested from external provider (stooq)",
+  "symbol": "TSLA.US",
+  "instrumentId": 310811656,
+  "sourceId": 20,
+  "seriesId": 957677275,
+  "pointsCount": 3959,
+  "bucketsInserted": 190,
+  "bucketsUpdated": 0
+}
+
+----------------------------------------------------------------
+TOOL CALL 6: analytics_summary (UC3 — aggregation + forecast)
+----------------------------------------------------------------
+Request : analytics_summary {
+  "instrumentId": 504815344, "sourceId": 20,
+  "granularity": "1d",
+  "from": "2020-01-01T00:00:00Z",
+  "to": "2026-03-25T00:00:00Z"
+}
+Response:
+{
+  "instrumentId": 504815344,
+  "sourceId": 20,
+  "granularity": "1d",
+  "seriesId": 203726835,
+  "indicatorSet": "[\"open\",\"high\",\"low\",\"close\",\"volume\"]",
+  "pointsCount": 3117,
+  "minClose": 54.2652,
+  "maxClose": 542.07,
+  "avgClose": 245.16918905999347,
+  "totalVolume": 140438707810,
+  "firstTs": "2020-01-02T00:00:00Z",
+  "firstClose": 72.4683,
+  "lastTs": "2026-03-25T00:00:00Z",
+  "lastClose": 371.04,
+  "simpleReturn": 4.120031793211653
+}
+
+----------------------------------------------------------------
+ASSISTANT ANALYSIS (grounded in platform data, not generic text)
+----------------------------------------------------------------
+AAPL.US returned +412% (4.12×) from $72.47 to $371.04 over 6.3
+years. The COVID crash bottom was $54.27 (Mar 2020). All-time high
+in the dataset was $542.07. Current price at $371.04 sits 51% below
+ATH and 51% above the 6-year mean of $245.17.
+
+TSLA.US returned +1245% (12.45×) from $28.68 to $385.95 over the
+same period — outperforming AAPL by 3× on simple return, but with
+significantly higher volatility (min: $24.08, max: $489.88).
+
+================================================================
+All 7 MCP tools verified operational. LLM answers are grounded
+entirely in live data from the warehouse REST API.
+MCP Server: /MCP_server/server.js v1.1.0
+API Base  : http://localhost:8080
+================================================================

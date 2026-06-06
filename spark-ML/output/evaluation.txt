@@ -1,0 +1,13 @@
+Model     : LinearRegression (Apache Spark MLlib 3.5.1)
+Dataset   : AAPL.US — instrumentId=504815344, sourceId=20
+Features  : open, high, low, close, volume
+Label     : next_day_close
+Train set : 2493 rows (80%)
+Test set  :  624 rows (20%)
+
+RMSE      : 4.872
+R²        : 0.9971
+MAE       : 3.541
+
+Next-day prediction (2026-03-26): 369.87
+Last known close (2026-03-25)   : 371.04
